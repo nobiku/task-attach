@@ -1,0 +1,265 @@
+#!/bin/bash
+
+#==========================================================
+# task-attach
+#
+# taskwarrior extension tool
+#
+#==========================================================
+
+#
+# Usage
+#
+function print_usage_and_exit() {
+    cat <<EOS > /dev/stderr
+Usage:
+    task-attach <ID> <COMMAND> <FILE>
+
+ID :
+    number  : ex) 1234
+    uuid    : ex) 12345678-ffff-1234-ffff-1234567890ab
+
+COMMAND :
+    add     : attach file to TASK-ID
+    list    : display a list of attached files from given ID
+    delete  : delete attached file from given TASK-ID
+
+EOS
+    exit 0
+}
+
+#
+# Select menu
+#
+function _select_menu() {
+    if [ $# -lt 1 ]; then
+        return -1
+    fi
+
+    local _choice
+
+    select _choice in "$@";
+    do
+        if [ -z "${_choice}" ]; then
+            continue
+        fi
+        break
+    done
+    echo $_choice
+    return $REPLY
+}
+
+#
+# 
+#
+function perror() {
+    echo "$1" > /dev/stderr
+}
+
+#
+#
+#
+function _attach_file_path() {
+    local _base_dir="${1}"
+    local _uuid="${2}"
+    echo "${_base_dir%/}/${_uuid}"
+    return 0
+}
+
+#----------------------------------------------------------
+# COMMAND function
+#----------------------------------------------------------
+
+#
+# Attach file to given id
+#
+# $1 : Task id
+# $2 : Attach directory
+# $3 : 
+#
+function _add() {
+    if [ $# -lt 3 ]; then
+        perror "Attach file is not specified."
+        return -1
+    fi
+
+    local _task_id=${1}
+    local _attach_dir=${2}
+    local _attach_file=${3}
+    local _src_type="u"
+
+    if [ -z "${_attach_dir}" ]; then
+        perror "Attach directory is not specified."
+        return -1
+    fi
+
+    # Check source file
+    if [ ! -e "${_attach_file}" ]; then
+        perror "Attach file not exist."
+        return -1
+    elif [ -f "${_attach_file}" ]; then
+        _src_type="f"
+    elif [ -d "${_attach_file}" ]; then
+        _src_type="d"
+    fi
+
+    # Check dst
+    if [ ! -d "${_attach_dir}" ]; then
+        echo "Attach directtory not exsist."
+        echo "Create directory -> ${_attach_dir}"
+        mkdir -p ${_attach_dir}
+    fi
+
+    # Check source path and destination path
+    local _src_abs_dir=$(cd $(dirname ${_attach_file}) && pwd)
+    local _src_abs_path=${_src_abs_dir%/}/$(basename ${_attach_file})
+
+    local _dst_file_path="${_attach_dir%/}/$(basename ${_attach_file})"
+    local _dst_abs_dir=$(cd ${_attach_dir} && pwd)
+    local _dst_abs_path=${_dst_abs_dir%/}/$(basename ${_dst_file_path})
+
+    echo "SRC ->" $_src_abs_path
+    echo "DST ->" $_dst_abs_path
+
+    if [ "${_src_abs_path}" = "${_dst_abs_path}" ]; then
+        perror "Source path and destination path is equal!"
+        return -1
+    fi
+
+    if [ -e "${_dst_abs_path}" ]; then
+        echo "WARNING: attached file is already exist."
+        selected=`_select_menu "Overwrite" "Cancel" "Backup"`
+    fi
+
+    cp $_src_abs_path $_dst_abs_path
+
+    echo "Add file -> $(basename $_dst_abs_path)"
+
+    return 0
+}
+
+#
+# Display
+# 
+# $1 : Task id
+# $2 : Attach directory
+#
+#    ls -l --time-style=long-iso ${1} | awk '{print $6, $7, $8}' | tail -n +2 | nl -s ') '
+#
+function _list() {
+    local _task_id=${1}
+    local _attach_dir=${2}
+
+    if [ -z "${_attach_dir}" ]; then
+        perror "Attach directory is not specified."
+        return -1
+    fi
+
+    if [ ! -d "${_attach_dir}" ]; then
+        echo "No file attached."
+        return 0
+    fi
+
+    local _entries=`ls ${_attach_dir} | wc -l`
+    if [ ${_entries} -eq 0 ]; then
+        echo "No file attached."
+        return 0
+    fi
+
+    echo "${_entries} files attached."
+
+#    local _keta=`echo ${_entries} | grep -o '[0-9]' | wc -l`
+    local _keta=${#_entries}
+
+    ls ${_attach_dir} | awk -v keta=${_keta} 'BEGIN{fmt = "%" keta "d) %s\n"} {i = i + 1; printf(fmt, i, $0) }'
+
+    return 0
+}
+
+#
+# Delete attached file
+#
+function _delete() {
+    local _task_id=${1}
+    local _attach_dir=${2}
+
+    if [ -z "${_attach_dir}" ]; then
+        perror "Attach directory is not specified."
+        return -1
+    fi
+
+    if [ ! -d "${_attach_dir}" ]; then
+        echo "No file attached."
+        return 0
+    fi
+
+    local _item_num=`ls ${_attach_dir} | wc -l`
+    if [ ${_item_num} -lt 1 ]; then
+        echo "No file attached."
+        return 0
+    fi
+
+    local _selected=`_select_menu $(ls ${_attach_dir})`
+
+    local _target_abs_dir=$(cd ${_attach_dir} && pwd)
+    local _target_abs_path="${_target_abs_dir%/}/${_selected}"
+
+    echo "Delete file? -> ${_target_abs_path}"
+    _selected=`_select_menu "yes" "no"`
+
+    # delete file
+    if [ ${_selected} = "yes" ]; then
+        rm ${_target_abs_path}
+    fi
+    return 0
+}
+
+#==========================================================
+# main
+#==========================================================
+
+ATTACH_FILE_ROOT_DIRECTORY="${HOME}/.task/attached_file"
+
+# 引数チェック
+if [ $# -lt 2 ]; then
+    print_usage_and_exit
+fi
+
+TASK_IDENTIFIER_COMMAND="task ${1} uuids"
+
+shift
+
+# タスクIDを取得する
+task_id=`${TASK_IDENTIFIER_COMMAND}`
+if [ -z "${task_id}" ]; then
+    perror "Task not found."
+    exit -1
+fi
+
+echo "ID:" $task_id
+
+ATTACH_FILE_DIRECTORY=`_attach_file_path ${ATTACH_FILE_ROOT_DIRECTORY}  ${task_id}`
+
+# 実行するコマンドを実行時引数から読み取る
+attach_command="${1}"
+
+shift
+
+# コマンドの実行
+case ${attach_command} in
+    "a" | "add" )
+        _add ${task_id} ${ATTACH_FILE_DIRECTORY} $@
+        ;;
+    "l" | "list" )
+        _list ${task_id} ${ATTACH_FILE_DIRECTORY} $@
+        ;;
+    "d" | "delete" )
+        _delete ${task_id} ${ATTACH_FILE_DIRECTORY} $@
+        ;;
+    * )
+        echo "Illegal command"
+        exit -1
+        ;;
+esac
+
+exit 0
